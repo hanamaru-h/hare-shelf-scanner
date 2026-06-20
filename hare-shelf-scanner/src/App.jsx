@@ -112,11 +112,35 @@ export default function HareShelfScanner() {
     setKeySaved(false);
   }
 
+  const MAX_EDGE = 1600;
+  const JPEG_QUALITY = 0.8;
+
+  async function compressImage(file) {
+    const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file); });
+    const img = await new Promise(res => { const i = new Image(); i.onload = () => res(i); i.src = dataUrl; });
+    let { width, height } = img;
+    if (width > MAX_EDGE || height > MAX_EDGE) {
+      if (width >= height) { height = Math.round(height * (MAX_EDGE / width)); width = MAX_EDGE; }
+      else { width = Math.round(width * (MAX_EDGE / height)); height = MAX_EDGE; }
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width; canvas.height = height;
+    canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+    const outDataUrl = canvas.toDataURL("image/jpeg", JPEG_QUALITY);
+    const base64 = outDataUrl.split(",")[1];
+    return { base64, mimeType: "image/jpeg", preview: outDataUrl };
+  }
+
   async function handleImages(files) {
     const arr = [];
     for (const file of files) {
-      const base64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(file); });
-      arr.push({ file, base64, mimeType: file.type, preview: URL.createObjectURL(file) });
+      try {
+        const { base64, mimeType, preview } = await compressImage(file);
+        arr.push({ file, base64, mimeType, preview });
+      } catch {
+        const base64 = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.readAsDataURL(file); });
+        arr.push({ file, base64, mimeType: file.type, preview: URL.createObjectURL(file) });
+      }
     }
     setImages(arr);
   }
