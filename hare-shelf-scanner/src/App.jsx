@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect } from "react";
 
-const NDL_API = "https://iss.ndl.go.jp/api/opensearch";
 const PROFIT_THRESHOLD = 150;
 const RANK_THRESHOLD = 800000;
 const PURCHASE_PRICE = 350;
@@ -8,24 +7,21 @@ const FEE = 220;
 const KEEPA_KEY_STORAGE = "hare_keepa_api_key";
 
 async function fetchKeepa(isbn, apiKey) {
-  const ean = isbn.replace(/-/g, "");
-  const url = `https://api.keepa.com/product?key=${apiKey}&domain=5&code=${ean}&stats=90`;
-  const res = await fetch(url);
+  const res = await fetch("/api/fetch-keepa", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ isbn, apiKey })
+  });
   const data = await res.json();
-  const product = data.products?.[0];
-  if (!product) return null;
-  const rank = product.stats?.current?.[3] ?? null;
-  const newPrice = product.stats?.current?.[0] !== -1 ? product.stats?.current?.[0] : null;
-  const usedPrice = product.stats?.current?.[2] !== -1 ? product.stats?.current?.[2] : null;
-  const minPrice = newPrice !== null && usedPrice !== null ? Math.min(newPrice, usedPrice) : (newPrice ?? usedPrice ?? null);
-  const sellPrice = minPrice !== null ? Math.round(minPrice / 100) : null;
-  const profit = sellPrice !== null ? sellPrice - PURCHASE_PRICE - FEE : null;
-  return { rank, sellPrice, profit, asin: product.asin ?? null, title: product.title ?? null };
+  return data.result ?? null;
 }
 
 async function searchNDL(title) {
-  const url = `${NDL_API}?title=${encodeURIComponent(title)}&mediatype=1&cnt=3`;
-  const res = await fetch(url);
+  const res = await fetch("/api/search-ndl", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title })
+  });
   const text = await res.text();
   const xml = new DOMParser().parseFromString(text, "application/xml");
   const items = xml.querySelectorAll("item");
