@@ -6,14 +6,14 @@ const PURCHASE_PRICE = 350;
 const FEE = 220;
 const KEEPA_KEY_STORAGE = "hare_keepa_api_key";
 
-async function fetchKeepa(isbn, apiKey) {
+async function fetchKeepa(isbn, title, apiKey) {
   const res = await fetch("/api/fetch-keepa", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ isbn, apiKey })
+    body: JSON.stringify({ isbn, title, apiKey })
   });
   const data = await res.json();
-  return data.result ?? null;
+  return { result: data.result ?? null, method: data.method ?? null, candidateCount: data.candidateCount ?? 0 };
 }
 
 async function searchNDL(title) {
@@ -48,7 +48,7 @@ async function extractTitlesFromImage(base64, mimeType) {
     body: JSON.stringify({ base64, mimeType })
   });
   const data = await res.json();
-  return data.titles || [];
+  return { titles: data.titles || [], truncated: !!data.truncated };
 }
 
 const STEPS = ["写真アップ", "タイトル確認", "ISBN取得", "利益判定", "結果"];
@@ -89,6 +89,7 @@ export default function HareShelfScanner() {
   const [keySaved, setKeySaved] = useState(!!localStorage.getItem(KEEPA_KEY_STORAGE));
   const [images, setImages] = useState([]);
   const [titles, setTitles] = useState([]);
+  const [extractionTruncated, setExtractionTruncated] = useState(false);
   const [processingImg, setProcessingImg] = useState(false);
   const [processingImgMsg, setProcessingImgMsg] = useState("");
   const [books, setBooks] = useState([]);
@@ -144,12 +145,15 @@ export default function HareShelfScanner() {
   async function runExtraction() {
     setProcessingImg(true);
     const all = [];
+    let anyTruncated = false;
     for (let i = 0; i < images.length; i++) {
       setProcessingImgMsg(`写真 ${i + 1}/${images.length} を解析中`);
-      const t = await extractTitlesFromImage(images[i].base64, images[i].mimeType);
+      const { titles: t, truncated } = await extractTitlesFromImage(images[i].base64, images[i].mimeType);
       all.push(...t);
+      if (truncated) anyTruncated = true;
     }
     setTitles([...new Set(all)]);
+    setExtractionTruncated(anyTruncated);
     setProcessingImg(false);
     setStep(1);
   }
@@ -174,28 +178,29 @@ export default function HareShelfScanner() {
   async function runKeepa(bookList) {
     if (!keepaKey) { setStep(4); return; }
     const updated = [...bookList];
-    const withIsbn = updated.filter(b => b.isbn);
-    for (let i = 0; i < withIsbn.length; i++) {
-      setKeepaProgress(Math.round(((i + 1) / withIsbn.length) * 100));
-      const b = withIsbn[i];
+    for (let i = 0; i < updated.length; i++) {
+      setKeepaProgress(Math.round(((i + 1) / updated.length) * 100));
+      const b = updated[i];
       try {
-        const k = await fetchKeepa(b.isbn, keepaKey);
+        const { result: k, method, candidateCount } = await fetchKeepa(b.isbn, b.ndlTitle || b.title, keepaKey);
         b.keepa = k;
+        b.keepaMethod = method;
+        b.keepaCandidateCount = candidateCount;
         b.status = k ? (k.rank && k.rank <= RANK_THRESHOLD && k.profit !== null && k.profit >= PROFIT_THRESHOLD ? "profit" : "other") : "no_data";
       } catch { b.status = "error"; }
       await new Promise(r => setTimeout(r, 300));
     }
-    updated.filter(b => !b.isbn).forEach(b => { b.status = "no_isbn"; });
     setBooks([...updated]);
     setStep(4);
   }
 
   function exportCSV(list, filename) {
-    const header = ["タイトル", "正式タイトル", "著者", "出版社", "ISBN", "ASIN", "ランク", "売価", "利益", "AmazonURL"];
+    const header = ["タイトル", "正式タイトル", "著者", "出版社", "ISBN", "ASIN", "ランク", "売価", "利益", "出品数", "検索方法", "AmazonURL"];
     const rows = list.map(b => {
       const k = b.keepa;
       const amzUrl = k?.asin ? `https://www.amazon.co.jp/dp/${k.asin}` : b.isbn ? `https://www.amazon.co.jp/s?k=${b.isbn}&i=stripbooks` : "";
-      return [b.title, b.ndlTitle || "", b.author || "", b.publisher || "", b.isbn || "", k?.asin || "", k?.rank ?? "", k?.sellPrice ?? "", k?.profit ?? "", amzUrl];
+      const methodLabel = b.keepaMethod === "title" ? "タイトル検索" : b.keepaMethod === "isbn" ? "ISBN検索" : "";
+      return [b.title, b.ndlTitle || "", b.author || "", b.publisher || "", b.isbn || "", k?.asin || "", k?.rank ?? "", k?.sellPrice ?? "", k?.profit ?? "", k?.offerCount ?? "", methodLabel, amzUrl];
     });
     const csv = [header, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
     const a = document.createElement("a");
@@ -255,6 +260,9 @@ export default function HareShelfScanner() {
                   <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>複数枚まとめて選択できます</div>
                   <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: "none" }} onChange={e => handleImages(Array.from(e.target.files))} />
                 </div>
+                <div style={{ background: lightGreen, borderRadius: 8, padding: "10px 14px", fontSize: 11, color: green, marginBottom: 14, lineHeight: 1.7 }}>
+                  きれいに読み取るコツ：1枚あたり10〜15冊くらいを目安に、ピントが合っている状態で撮ってください。棚全体を1枚に収めるより、何回かに分けて近づいて撮るのがおすすめです。
+                </div>
                 {images.length > 0 && (
                   <>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
@@ -276,6 +284,16 @@ export default function HareShelfScanner() {
 
         {step === 1 && (
           <div>
+            {extractionTruncated && (
+              <div style={{ background: "#fff3cd", border: "1px solid #f5c542", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#8a6d00", marginBottom: 14, lineHeight: 1.7 }}>
+                本が多すぎて、一部のタイトルが読み取れなかった可能性があります。気になる場合は、写真を分けて撮り直してみてください。
+              </div>
+            )}
+            {titles.length === 0 && (
+              <div style={{ background: "#fee", border: "1px solid #f0a0a0", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: red, marginBottom: 14, lineHeight: 1.7 }}>
+                タイトルが読み取れませんでした。写真がぼやけていないか、本の背表紙の文字が見えているか確認して、撮り直してみてください。
+              </div>
+            )}
             <div style={{ background: "#fff", borderRadius: 10, padding: 14, marginBottom: 14, boxShadow: "0 1px 4px rgba(0,0,0,0.07)" }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: green, marginBottom: 10 }}>読み取り結果 — {titles.length}冊</div>
               <div style={{ fontSize: 12, color: "#666", marginBottom: 10 }}>タップして編集・削除できます</div>
@@ -377,9 +395,12 @@ export default function HareShelfScanner() {
                       {k.sellPrice && <span style={{ background: "#fff8e0", color: "#b07a00", fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 5 }}>最安 ¥{k.sellPrice.toLocaleString()}</span>}
                       {k.profit !== null && <span style={{ background: isProfit ? lightGreen : "#fee", color: isProfit ? green : red, fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 5 }}>利益 ¥{k.profit.toLocaleString()}</span>}
                       {k.asin && <span style={{ background: "#f0f0f0", color: "#555", fontSize: 11, fontFamily: "monospace", padding: "3px 8px", borderRadius: 5 }}>ASIN: {k.asin}</span>}
+                      {k.offerCount !== null && k.offerCount !== undefined && <span style={{ background: "#eef2fa", color: "#3a5a8a", fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 5 }}>出品 {k.offerCount}件</span>}
+                      {b.keepaMethod === "title" && <span style={{ background: "#fdf0e8", color: "#a05a20", fontSize: 11, padding: "3px 8px", borderRadius: 5 }}>タイトル検索で発見</span>}
+                      {b.keepaCandidateCount > 1 && <span style={{ background: "#f0f0f0", color: "#888", fontSize: 11, padding: "3px 8px", borderRadius: 5 }}>候補{b.keepaCandidateCount}件中ベスト1件</span>}
                     </div>
                   )}
-                  {!b.isbn && <div style={{ fontSize: 11, color: "#f0a500", marginTop: 4 }}>ISBNが見つかりませんでした</div>}
+                  {!k && <div style={{ fontSize: 11, color: "#f0a500", marginTop: 4 }}>Amazon商品が見つかりませんでした</div>}
                   {amzUrl && <a href={amzUrl} target="_blank" rel="noreferrer" style={{ display: "inline-block", marginTop: 8, fontSize: 12, color: green, fontWeight: 700, textDecoration: "none" }}>Amazonで確認</a>}
                 </div>
               );
